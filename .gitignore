@@ -1,4 +1,8 @@
 node_modules/
+dist/
+*.zip
+private.pem
+private_key.pem
 *.log
 .DS_Store
 *.local

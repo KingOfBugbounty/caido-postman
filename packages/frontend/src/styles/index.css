@@ -1,0 +1,25 @@
+@import "./caido.css";
+@import "./primevue.css";
+@import "tailwindcss/base";
+@import "tailwindcss/components";
+@import "tailwindcss/utilities";
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.cp-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}
+
+.cp-spinner-sm {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
