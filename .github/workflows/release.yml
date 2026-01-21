@@ -3,10 +3,6 @@ name: Release
 on:
   workflow_dispatch:
 
-env:
-  NODE_VERSION: 20
-  PNPM_VERSION: 9
-
 jobs:
   release:
     name: Release
@@ -28,12 +24,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: 20
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: ${{ env.PNPM_VERSION }}
           run_install: true
 
       - name: Build package
