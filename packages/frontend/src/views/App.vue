@@ -38,6 +38,13 @@ const requests = ref<PostmanRequest[]>([]);
 const showCollections = ref(false);
 const expandedRows = ref<Record<string, boolean>>({});
 
+// Cache state - persists data when switching between tabs
+const publicSearchCache = ref<Map<string, PostmanRequest[]>>(new Map());
+const myCollectionsCache = ref<PostmanCollection[]>([]);
+const collectionRequestsCache = ref<Map<string, PostmanRequest[]>>(new Map());
+const lastSearchQuery = ref("");
+const activeTab = ref<"public" | "personal">("public");
+
 // Computed
 const stats = computed(() => ({
   total: requests.value.length,
@@ -103,6 +110,7 @@ function logout() {
   collections.value = [];
   requests.value = [];
   localStorage.removeItem("postman-api-key");
+  clearCache();
   statusMessage.value = "";
 }
 
@@ -112,8 +120,19 @@ async function searchPublicAPIs() {
     return;
   }
 
+  activeTab.value = "public";
+  const cacheKey = searchQuery.value.toLowerCase().trim();
+  searchContext = cacheKey.split(/[^a-z]/)[0] || "default";
+
+  // Check cache first
+  if (publicSearchCache.value.has(cacheKey) && lastSearchQuery.value === cacheKey) {
+    const cachedRequests = publicSearchCache.value.get(cacheKey)!;
+    requests.value = applyFilters(cachedRequests);
+    setStatus(`Loaded ${requests.value.length} requests from cache`, "success");
+    return;
+  }
+
   isLoading.value = true;
-  searchContext = searchQuery.value.toLowerCase().split(/[^a-z]/)[0] || "default";
   setStatus(`Searching for "${searchQuery.value}"...`, "info");
 
   try {
@@ -126,7 +145,7 @@ async function searchPublicAPIs() {
     }
 
     setStatus(`Found ${searchResults.length} collections. Loading requests...`, "info");
-    requests.value = [];
+    const allRequests: PostmanRequest[] = [];
     let loaded = 0;
 
     for (const col of searchResults.slice(0, 10)) {
@@ -135,7 +154,7 @@ async function searchPublicAPIs() {
         if (data?.requests) {
           loaded++;
           for (const req of data.requests) {
-            requests.value.push({
+            allRequests.push({
               ...req,
               collectionName: data.name,
               validationStatus: "pending",
@@ -147,15 +166,13 @@ async function searchPublicAPIs() {
       }
     }
 
-    // Apply filters
-    if (methodFilter.value !== "ALL") {
-      requests.value = requests.value.filter(r => r.method === methodFilter.value);
-    }
-    if (domainFilter.value) {
-      requests.value = requests.value.filter(r =>
-        r.url.toLowerCase().includes(domainFilter.value.toLowerCase())
-      );
-    }
+    // Store in cache (unfiltered)
+    publicSearchCache.value.set(cacheKey, allRequests);
+    lastSearchQuery.value = cacheKey;
+    saveCache();
+
+    // Apply filters for display
+    requests.value = applyFilters(allRequests);
 
     setStatus(`Loaded ${requests.value.length} requests from ${loaded} collections`, "success");
   } catch (error) {
@@ -165,7 +182,30 @@ async function searchPublicAPIs() {
   isLoading.value = false;
 }
 
+function applyFilters(reqs: PostmanRequest[]): PostmanRequest[] {
+  let filtered = [...reqs];
+  if (methodFilter.value !== "ALL") {
+    filtered = filtered.filter(r => r.method === methodFilter.value);
+  }
+  if (domainFilter.value) {
+    filtered = filtered.filter(r =>
+      r.url.toLowerCase().includes(domainFilter.value.toLowerCase())
+    );
+  }
+  return filtered;
+}
+
 async function loadMyCollections() {
+  activeTab.value = "personal";
+
+  // Check cache first
+  if (myCollectionsCache.value.length > 0) {
+    collections.value = myCollectionsCache.value;
+    showCollections.value = true;
+    setStatus(`Loaded ${collections.value.length} collections from cache`, "success");
+    return;
+  }
+
   isLoading.value = true;
   setStatus("Loading your collections...", "info");
 
@@ -177,6 +217,11 @@ async function loadMyCollections() {
       name: c.name,
       owner: "",
     }));
+
+    // Store in cache
+    myCollectionsCache.value = collections.value;
+    saveCache();
+
     showCollections.value = true;
     setStatus(`Found ${collections.value.length} collections`, "success");
   } catch (error) {
@@ -187,6 +232,15 @@ async function loadMyCollections() {
 }
 
 async function loadCollection(col: PostmanCollection) {
+  const cacheKey = col.uid;
+
+  // Check cache first
+  if (collectionRequestsCache.value.has(cacheKey)) {
+    requests.value = collectionRequestsCache.value.get(cacheKey)!;
+    setStatus(`Loaded ${requests.value.length} requests from cache`, "success");
+    return;
+  }
+
   isLoading.value = true;
   setStatus(`Loading "${col.name}"...`, "info");
 
@@ -198,6 +252,11 @@ async function loadCollection(col: PostmanCollection) {
         collectionName: data.name,
         validationStatus: "pending" as const,
       }));
+
+      // Store in cache
+      collectionRequestsCache.value.set(cacheKey, requests.value);
+      saveCache();
+
       setStatus(`Loaded ${requests.value.length} requests`, "success");
     }
   } catch (error) {
@@ -312,10 +371,69 @@ function getStatusSeverity(status?: string) {
   return map[status || ""] || "info";
 }
 
+// Cache persistence functions
+const CACHE_KEY = "postman-cache";
+const CACHE_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
+
+interface CacheData {
+  timestamp: number;
+  publicSearchCache: [string, PostmanRequest[]][];
+  myCollectionsCache: PostmanCollection[];
+  collectionRequestsCache: [string, PostmanRequest[]][];
+  lastSearchQuery: string;
+}
+
+function saveCache() {
+  try {
+    const cacheData: CacheData = {
+      timestamp: Date.now(),
+      publicSearchCache: Array.from(publicSearchCache.value.entries()),
+      myCollectionsCache: myCollectionsCache.value,
+      collectionRequestsCache: Array.from(collectionRequestsCache.value.entries()),
+      lastSearchQuery: lastSearchQuery.value,
+    };
+    localStorage.setItem(CACHE_KEY, JSON.stringify(cacheData));
+  } catch (error) {
+    console.warn("Failed to save cache:", error);
+  }
+}
+
+function loadCache() {
+  try {
+    const cached = localStorage.getItem(CACHE_KEY);
+    if (!cached) return;
+
+    const cacheData: CacheData = JSON.parse(cached);
+
+    // Check if cache is expired
+    if (Date.now() - cacheData.timestamp > CACHE_EXPIRY_MS) {
+      localStorage.removeItem(CACHE_KEY);
+      return;
+    }
+
+    publicSearchCache.value = new Map(cacheData.publicSearchCache);
+    myCollectionsCache.value = cacheData.myCollectionsCache;
+    collectionRequestsCache.value = new Map(cacheData.collectionRequestsCache);
+    lastSearchQuery.value = cacheData.lastSearchQuery;
+  } catch (error) {
+    console.warn("Failed to load cache:", error);
+    localStorage.removeItem(CACHE_KEY);
+  }
+}
+
+function clearCache() {
+  publicSearchCache.value.clear();
+  myCollectionsCache.value = [];
+  collectionRequestsCache.value.clear();
+  lastSearchQuery.value = "";
+  localStorage.removeItem(CACHE_KEY);
+}
+
 // Lifecycle
 onMounted(() => {
   const savedKey = localStorage.getItem("postman-api-key");
   if (savedKey) config.value.apiKey = savedKey;
+  loadCache();
 });
 </script>
 
@@ -416,6 +534,10 @@ onMounted(() => {
             <Button @click="loadMyCollections" :loading="isLoading" severity="secondary">
               <i class="fas fa-folder mr-2"></i>
               My Collections
+            </Button>
+            <Button @click="clearCache" severity="warn" outlined title="Clear cached collections">
+              <i class="fas fa-sync mr-2"></i>
+              Refresh Cache
             </Button>
             <Button @click="logout" severity="danger" outlined class="ml-auto">
               <i class="fas fa-sign-out-alt mr-2"></i>
